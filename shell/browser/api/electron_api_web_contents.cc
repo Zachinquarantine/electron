@@ -440,6 +440,29 @@ base::string16 GetDefaultPrinterAsync() {
   }
   return base::UTF8ToUTF16(printer_name);
 }
+
+// Copied from
+// chrome/browser/ui/webui/print_preview/local_printer_handler_default.cc:L36-L54
+scoped_refptr<base::TaskRunner> CreatePrinterHandlerTaskRunner() {
+  // USER_VISIBLE because the result is displayed in the print preview dialog.
+#if !defined(OS_WIN)
+  static constexpr base::TaskTraits kTraits = {
+      base::MayBlock(), base::TaskPriority::USER_VISIBLE};
+#endif
+
+#if defined(USE_CUPS)
+  // CUPS is thread safe.
+  return base::ThreadPool::CreateTaskRunner(kTraits);
+#elif defined(OS_WIN)
+  // Windows drivers are likely not thread-safe and need to be accessed on the
+  // UI thread.
+  return content::GetUIThreadTaskRunner(
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE});
+#else
+  // Be conservative on unsupported platforms.
+  return base::ThreadPool::CreateSingleThreadTaskRunner(kTraits);
+#endif
+}
 #endif
 
 struct UserDataLink : public base::SupportsUserData::Data {
@@ -2514,9 +2537,9 @@ void WebContents::Print(gin::Arguments* args) {
     settings.SetIntKey(printing::kSettingDpiVertical, dpi);
   }
 
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
-      base::BindOnce(&GetDefaultPrinterAsync),
+  scoped_refptr<base::TaskRunner> tr = CreatePrinterHandlerTaskRunner();
+  base::PostTaskAndReplyWithResult(
+      tr.get(), FROM_HERE, base::BindOnce(&GetDefaultPrinterAsync),
       base::BindOnce(&WebContents::OnGetDefaultPrinter,
                      weak_factory_.GetWeakPtr(), std::move(settings),
                      std::move(callback), device_name, silent));
